@@ -1,0 +1,43 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.swp
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.sublime-workspace
+
+# Environment variables
+.env
+
+# Logs and output
+logs/
+*.log
+
+# Data and database files
+*.sqlite
+*.db
+*.pkl
+*.json
+
+# ChromaDB persistent storage
+chroma_index/
+chroma_db/
+chroma/
+
+# Dependencies (if using poetry/pipenv)
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+
+
+
