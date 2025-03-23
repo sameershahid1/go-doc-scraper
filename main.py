@@ -36,7 +36,7 @@ def getLLM(model: str):
             return OllamaLLM(
                 model="deepseek-r1:1.5b",
                 temperature=0.1,
-                num_ctx=2500,
+                num_ctx=8500,
                 top_p=0.9,
                 top_k=40,
             )
@@ -44,10 +44,11 @@ def getLLM(model: str):
             gemini = GoogleGenerativeAI(
                 model="gemini-2.0-flash-thinking-exp-01-21",
                 google_api_key="AIzaSyCEL1gMB3WhZVXPjtFOedl-DT_X0OIv0xI",
+                max_output_tokens=8500,
                 temperature=0.8,
-                top_p=0.9,
-                top_k=40,
                 streaming=True,
+                top_p=0.9,
+                top_k=80,
             )
 
             return gemini
@@ -150,3 +151,6 @@ async def user_query(chat: ChatQuery):
         return {"message": "Internal server"}
     else:
         return stream
+
+
+

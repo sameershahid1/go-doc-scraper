@@ -21,7 +21,8 @@ def cleanContent(text):
 
 
 def getQueryEmbedding(text):
-    response = ollama.embeddings(model="bge-large:latest", prompt=text)
+    response = ollama.embeddings(
+        model="qllama/bge-small-en-v1.5:latest", prompt=text)
     return response["embedding"]
 
 
@@ -34,7 +35,7 @@ chromaClient = chromadb.HttpClient(host=dbHost, port=dbPort)
 collection = chromaClient.get_or_create_collection(name="golang_docs")
 
 query_text = cleanContent(
-    """what is cmd in golang""")
+    """what is database indexing in golang""")
 
 query_embedding = getQueryEmbedding(query_text)
 

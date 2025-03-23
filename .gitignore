@@ -13,6 +13,8 @@ venv/
 .idea/
 *.sublime-workspace
 
+scraped_docs/
+
 # Environment variables
 .env
 
