@@ -1,5 +1,4 @@
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# import google.generativeai as genai
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -14,18 +13,15 @@ import re
 
 
 # ✂️ Function to Chunk Text Properly
-def splitTextLangchain(text, chunk_size=200, overlap=50):
+def splitTextLangchain(text, chunk_size=300, overlap=50):
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size, chunk_overlap=overlap)
     return splitter.split_text(text)
 
 
-def getGeminiEmbedding(text):
-    # model = "models/embedding-001"
-    # response = genai.embed_content(
-    #    model=model, content=text, task_type="RETRIEVAL_DOCUMENT")
-    response = ollama.embeddings(model="bge-large:latest", prompt=text)
-
+def getEmbedding(text):
+    response = ollama.embeddings(
+        model="qllama/bge-small-en-v1.5:latest", prompt=text)
     return response["embedding"]
 
 
@@ -48,9 +44,7 @@ def getAllGolangPackages(BASE_URL, path):
     ]
 
     package_links.extend(links)
-
-    time.sleep(1)  # Avoid hitting rate limits
-
+    time.sleep(1)
     return list(set(package_links))  # Remove duplicates
 
 
@@ -149,11 +143,13 @@ def scrapeAndStore(collection, targetWebsie, path):
 
     for pkgUrl in packageUrls:
         textContent = scrapeGolangDocs(pkgUrl)
+        if textContent is not None and len(textContent) > 409600:
+            continue
 
         if textContent:
             chunks = splitTextLangchain(textContent)
             for i, chunk in enumerate(chunks):
-                embedding = getGeminiEmbedding(chunk)
+                embedding = getEmbedding(chunk)
                 ids = f"{pkgUrl}#chunk-{i}"
                 metaData = {
                     "url": pkgUrl,
@@ -177,24 +173,19 @@ def scrapeAndStore(collection, targetWebsie, path):
 
 async def main():
     load_dotenv()
-    # llmApiKey = os.getenv("GEMINI_API_KEY")
     dbHost = os.getenv("DB_HOST")
     dbPort = os.getenv("DB_PORT")
     targetWebSite = os.getenv("TARGET_WEBSITE")
 
-    if not dbPort and not dbHost:
-        return
-
-    # genai.configure(api_key=llmApiKey)
     chromaClient = chromadb.HttpClient(host=dbHost, port=dbPort)
     collection = chromaClient.get_or_create_collection(name="golang_docs")
 
+    basicConcepts = "https://go.dev/doc/"
     thirdPartyPath = "search?q=golang.org"
     standardPath = "std"
-    # basicConcepts = "https://go.dev/doc/"
 
-    # print("Starting basic concepts docs")
-    # scrapeAndStore(collection, basicConcepts, "")
+    print("Starting basic concepts docs")
+    scrapeAndStore(collection, basicConcepts, "")
 
     print("Starting-Third party package extraction")
     scrapeAndStore(collection, targetWebSite, thirdPartyPath)

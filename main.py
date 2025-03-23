@@ -1,43 +1,63 @@
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_google_genai import GoogleGenerativeAI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langchain.prompts import PromptTemplate
 from langchain_ollama import OllamaLLM
 from langchain_chroma import Chroma
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from fastapi import FastAPI
 import chromadb
 import asyncio
 import ollama
 import os
 
 
-class StreamingCallbackHandler(BaseCallbackHandler):
-    """Custom callback handler to handle streaming output."""
+load_dotenv()
+app = FastAPI()
 
-    def __init__(self):
-        self.response = ""
-
-    def on_llm_new_token(self, token: str, **kwargs) -> None:
-        self.response += token
-        print(token, end="", flush=True)
-
-    def get_response(self):
-        return self.response
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-def getLLM():
-    llm = OllamaLLM(
-        callbacks=[StreamingCallbackHandler()],
-        model="deepseek-r1:1.5b",
-        temperature=0.1,
-        num_ctx=2500,
-        top_p=0.9,
-        top_k=40,
-    )
+class ChatQuery(BaseModel):
+    query: str
+    model: str
 
-    return llm
+
+def getLLM(model: str):
+    match model:
+        case "deepseek-r1:1.5b":
+            return OllamaLLM(
+                model="deepseek-r1:1.5b",
+                temperature=0.1,
+                num_ctx=2500,
+                top_p=0.9,
+                top_k=40,
+            )
+        case "gemini":
+            gemini = GoogleGenerativeAI(
+                model="gemini-2.0-flash-thinking-exp-01-21",
+                google_api_key="AIzaSyCEL1gMB3WhZVXPjtFOedl-DT_X0OIv0xI",
+                temperature=0.8,
+                top_p=0.9,
+                top_k=40,
+                streaming=True,
+            )
+
+            return gemini
+
+    return None
 
 
 def getQueryEmbedding(prompt: str):
-    response = ollama.embeddings(model="bge-large:latest", prompt=prompt)
+    response = ollama.embeddings(
+        model="qllama/bge-small-en-v1.5:latest", prompt=prompt)
     return response["embedding"]
 
 
@@ -59,7 +79,7 @@ async def retrieveContexts(vectorstore, varitionQuery):
     return context
 
 
-def getChromaDb(dbHost, dbPort):
+def getChromaDb(dbHost: str, dbPort: int):
     chromaClient = chromadb.HttpClient(host=dbHost, port=dbPort)
     vectorstore = Chroma(
         collection_name="golang_docs",
@@ -69,7 +89,7 @@ def getChromaDb(dbHost, dbPort):
     return vectorstore
 
 
-def expandQuery(query):
+def expandQuery(query: str):
     variations = [
         query,
         f"What does '{query}' mean in Golang?",
@@ -79,39 +99,54 @@ def expandQuery(query):
     return variations
 
 
-# 🏁 Run the whole process
-async def main():
-    load_dotenv()
+async def llmWorkflow(chat: ChatQuery):
     dbHost = os.getenv("DB_HOST")
     dbPort = os.getenv("DB_PORT")
+    if not dbHost or not dbPort:
+        return None
 
-    query = """What are the security step of golang."""
-    queryVariation = expandQuery(query)
-    vectorStore = getChromaDb(dbHost, dbPort)
+    queryVariation = expandQuery(chat.query)
+    vectorStore = getChromaDb(dbHost, int(dbPort))
     context = await retrieveContexts(vectorStore, queryVariation)
     promptTemplate = PromptTemplate(
         input_variables=["query", "context"],
         template="""
-        You are an AI assistant specializing in Golang documentation.
-        Your responses **must be strictly based on the provided documentation**.
+You are an AI assistant specializing in Golang documentation.  
 
-        If you are unsure, reply with:
-        **"Not enough documentation found."**
+- Always **think before responding**, ensuring accuracy.  
+- Do **not generate any information** beyond what is provided in the context.  
+- If the answer is not found in the provided documentation, respond with:  
+  **"Not enough documentation found."**  
 
-        **Context:**
-        {context}
+### **Context:**  
+{context}  
 
-        **User Question:**
-        "{query}"
+### **User Question:**  
+"{query}"  
 
-        **Response (strictly based on context, don't create think your self,
-                     just use the provided document for the reference):**
+### **Response (strictly based on context):**
+- **Answer:** [Provide the response strictly from the context]
+- **Reference (if applicable):** [Cite the relevant section from the context]
     """
     )
 
-    formatPrompt = promptTemplate.format(query=query, context=context)
-    llm = getLLM()
-    llm.invoke(formatPrompt)
+    formatPrompt = promptTemplate.format(query=chat.query, context=context)
+    llm = getLLM(chat.model)
+    if not llm:
+        return None
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    async def stream_llm():
+        for token in llm.stream(formatPrompt):
+            yield token
+            await asyncio.sleep(0)
+
+    return StreamingResponse(stream_llm(), media_type="text/plain")
+
+
+@app.post("/chat/query")
+async def user_query(chat: ChatQuery):
+    stream = await llmWorkflow(chat)
+    if not stream:
+        return {"message": "Internal server"}
+    else:
+        return stream
