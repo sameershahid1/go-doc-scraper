@@ -1,3 +1,4 @@
+from fastapi import FastAPI, HTTPException
 from langchain_google_genai import GoogleGenerativeAI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -6,15 +7,17 @@ from langchain_ollama import OllamaLLM
 from langchain_chroma import Chroma
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from fastapi import FastAPI
 import chromadb
 import asyncio
 import ollama
 import os
 
+import logging
 
 load_dotenv()
 app = FastAPI()
+
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,7 +48,7 @@ def getLLM(model: str):
                 model="gemini-2.0-flash-thinking-exp-01-21",
                 google_api_key="AIzaSyCEL1gMB3WhZVXPjtFOedl-DT_X0OIv0xI",
                 max_output_tokens=8500,
-                temperature=0.8,
+                temperature=0.7,
                 streaming=True,
                 top_p=0.9,
                 top_k=80,
@@ -90,14 +93,41 @@ def getChromaDb(dbHost: str, dbPort: int):
     return vectorstore
 
 
-def expandQuery(query: str):
-    variations = [
-        query,
-        f"What does '{query}' mean in Golang?",
-        f"Explain '{query}' with examples.",
-        f"How does '{query}' work in Golang?",
-    ]
+def expandQuery(query: str, model: str):
+    prompt = f"""
+    Generate **5 diverse variations** of the following query to help retrieve relevant Golang documentation.
+    The variations should rephrase the question in **different ways** to improve search results.
+
+    **Original Query:** "{query}"
+
+    **Examples of Good Variations:**
+    - "What does '{query}' mean in Golang?"
+    - "Explain '{query}' with examples."
+    - "How does '{query}' work in Golang?"
+
+    **Return variations as a numbered list.**
+    """
+    llm = getLLM(model)
+    if not llm:
+        return None
+    response = llm.invoke(prompt)
+    variations = [line.strip("12345.- ")
+                  for line in response.split("\n") if line.strip()]
+    variations = variations[1:]
     return variations
+
+
+async def getGeminiStream(llm, formatedPrompt: str):
+    response = llm.astream(formatedPrompt)
+    async for chunk in response:
+        yield chunk
+        await asyncio.sleep(0)
+
+
+async def getOllamaStream(llm, formatPrompt: str):
+    for token in llm.stream(formatPrompt):
+        yield token
+        await asyncio.sleep(0)
 
 
 async def llmWorkflow(chat: ChatQuery):
@@ -106,28 +136,35 @@ async def llmWorkflow(chat: ChatQuery):
     if not dbHost or not dbPort:
         return None
 
-    queryVariation = expandQuery(chat.query)
+    queryVariation = expandQuery(chat.query, chat.model)
+    if not queryVariation:
+        return None
     vectorStore = getChromaDb(dbHost, int(dbPort))
     context = await retrieveContexts(vectorStore, queryVariation)
     promptTemplate = PromptTemplate(
         input_variables=["query", "context"],
         template="""
-You are an AI assistant specializing in Golang documentation.  
+        You are an AI assistant specializing in **Golang documentation**.
+        You are **not a general AI**, **not a chatbot**, and you should never claim
+        to be anything other than a **Golang documentation assistant**.
 
-- Always **think before responding**, ensuring accuracy.  
-- Do **not generate any information** beyond what is provided in the context.  
-- If the answer is not found in the provided documentation, respond with:  
-  **"Not enough documentation found."**  
+        ### **Rules for Responses:**
+        - Always **think before responding**, ensuring accuracy.
+        - Do **not generate any information** beyond what is provided in the context.
+        - If the user asks about your identity, always respond with:
+            **"I am a Golang documentation assistant, nothing more."**
+        - If the answer is not found in the provided documentation, respond with:
+        **"Not enough documentation found."**
+        ---
 
-### **Context:**  
-{context}  
+        ### **Context:**
+        {context}
 
-### **User Question:**  
-"{query}"  
+        ### **User Question:**
+        "{query}"
 
-### **Response (strictly based on context):**
-- **Answer:** [Provide the response strictly from the context]
-- **Reference (if applicable):** [Cite the relevant section from the context]
+        ### **Response (strictly based on context):**
+        [Provide the response strictly from the context]
     """
     )
 
@@ -136,21 +173,32 @@ You are an AI assistant specializing in Golang documentation.
     if not llm:
         return None
 
-    async def stream_llm():
-        for token in llm.stream(formatPrompt):
-            yield token
-            await asyncio.sleep(0)
+    match chat.model:
+        case "gemini":
+            return StreamingResponse(
+                getGeminiStream(llm, formatPrompt),
+                media_type="text/plain",
+            )
+        case "deepseek-r1:1.5b":
+            return StreamingResponse(
+                getOllamaStream(llm, formatPrompt),
+                media_type="text/plain")
 
-    return StreamingResponse(stream_llm(), media_type="text/plain")
+    return None
 
 
 @app.post("/chat/query")
 async def user_query(chat: ChatQuery):
-    stream = await llmWorkflow(chat)
-    if not stream:
-        return {"message": "Internal server"}
-    else:
+    try:
+        stream = await llmWorkflow(chat)
+        if not stream:
+            logger.error("llmWorkflow returned None")
+            raise HTTPException(
+                status_code=500, detail="LLM workflow failed to produce a stream.")
         return stream
-
-
-
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception:
+        logger.exception("Error in llmWorkflow")
+        raise HTTPException(
+            status_code=500, detail="Internal server error during LLM workflow.")
